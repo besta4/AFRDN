@@ -1,0 +1,18 @@
+.venv/
+.env
+.env.*
+!.env.example
+
+data/
+__pycache__/
+*.py[cod]
+
+# Runtime/local state
+audit.jsonl
+*.db
+
+# Local model caches and heavyweight model binaries
+models/.cache/
+models/*.gguf
+
+PS_20174392719_1491204439457_log.csv
