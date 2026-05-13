@@ -12,9 +12,11 @@
     tailwind.config = {
       theme: {
         extend: {
-          fontFamily: { sans: ["Inter", "system-ui", "sans-serif"] },
-        }
-      }
+          fontFamily: {
+            sans: ["-apple-system", "BlinkMacSystemFont", "Segoe UI", "Helvetica", "Arial", "sans-serif"],
+          },
+        },
+      },
     };
   </script>
 
@@ -27,87 +29,49 @@
   <!-- force-graph -->
   <script src="https://unpkg.com/force-graph@1.43.5/dist/force-graph.min.js"></script>
 
-  <!-- Inter font -->
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
-
   <style>
     /* ── Base ───────────────────────────────────────────────────────────── */
     *,
     *::before,
     *::after {
       box-sizing: border-box;
+      margin: 0;
+      padding: 0;
     }
 
     body {
-      font-family: "Inter", system-ui, sans-serif;
-      background: #020617;
-      color: #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background: #000000;
+      color: #ffffff;
       overflow-x: hidden;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
     }
 
-    /* ── Blobs ──────────────────────────────────────────────────────────── */
-    .blob {
+    /* ── Noise texture (same as admin/dashboard/login) ───────────────────── */
+    body::before {
+      content: "";
       position: fixed;
-      border-radius: 50%;
-      filter: blur(90px);
-      opacity: 0.3;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
       pointer-events: none;
-      animation: float 14s ease-in-out infinite;
+      opacity: 0.4;
       z-index: 0;
     }
 
-    .blob-1 {
-      background: #6366f1;
-      width: 520px;
-      height: 520px;
-      top: -140px;
-      left: -120px;
-      animation-delay: 0s;
-    }
-
-    .blob-2 {
-      background: #7c3aed;
-      width: 440px;
-      height: 440px;
-      top: 45%;
-      right: -100px;
-      animation-delay: -5s;
-    }
-
-    .blob-3 {
-      background: #1d4ed8;
-      width: 370px;
-      height: 370px;
-      bottom: -100px;
-      left: 38%;
-      animation-delay: -9s;
-    }
-
-    @keyframes float {
-
-      0%,
-      100% {
-        transform: translate(0, 0) scale(1);
-      }
-
-      33% {
-        transform: translate(28px, -38px) scale(1.04);
-      }
-
-      66% {
-        transform: translate(-18px, 22px) scale(0.97);
-      }
-    }
-
-    /* ── Glass ──────────────────────────────────────────────────────────── */
+    /* ── Glass card (matches admin/dashboard) ───────────────────────────── */
     .glass {
-      background: rgba(255, 255, 255, 0.05);
+      background: rgba(18, 18, 18, 0.6);
       backdrop-filter: blur(20px);
       -webkit-backdrop-filter: blur(20px);
-      border: 1px solid rgba(255, 255, 255, 0.09);
-      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
-      border-radius: 1rem;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+      border-radius: 16px;
+      transition: all 0.2s ease;
+    }
+
+    .glass:hover {
+      border-color: rgba(255, 255, 255, 0.1);
     }
 
     /* ── Nav indicator pill ─────────────────────────────────────────────── */
@@ -115,11 +79,11 @@
       position: absolute;
       top: 4px;
       height: calc(100% - 8px);
-      background: rgba(99, 102, 241, 0.45);
+      background: rgba(255, 255, 255, 0.08);
       border-radius: 10px;
       transition: left 280ms cubic-bezier(0.34, 1.56, 0.64, 1), width 280ms cubic-bezier(0.34, 1.56, 0.64, 1);
       pointer-events: none;
-      border: 1px solid rgba(99, 102, 241, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.1);
       backdrop-filter: blur(8px);
     }
 
@@ -129,8 +93,8 @@
     }
 
     #dropzone.drag-over {
-      border-color: #818cf8;
-      background: rgba(99, 102, 241, 0.1);
+      border-color: rgba(255, 255, 255, 0.3);
+      background: rgba(255, 255, 255, 0.04);
       transform: scale(1.015);
     }
 
@@ -306,11 +270,6 @@
 
 <body class="min-h-screen relative">
 
-  <!-- ── Background blobs ─────────────────────────────────────────────────── -->
-  <div class="blob blob-1" aria-hidden="true"></div>
-  <div class="blob blob-2" aria-hidden="true"></div>
-  <div class="blob blob-3" aria-hidden="true"></div>
-
   <!-- ── Toast container ──────────────────────────────────────────────────── -->
   <div id="toast-container" class="fixed top-5 right-5 z-50 flex flex-col gap-2"></div>
 
@@ -321,48 +280,54 @@
 
     <!-- Wordmark -->
     <div class="mb-10 text-center">
-      <h1 class="text-4xl font-bold tracking-tight text-white">
-        <span class="text-indigo-400">J</span>atayu
-      </h1>
-      <p class="text-slate-400 text-sm mt-1">Autonomous Fraud Detection &amp; Response Network</p>
+      <div class="flex items-center justify-center gap-3 mb-3">
+        <svg width="36" height="36" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="32" height="32" rx="8" fill="white" fill-opacity="0.08" />
+          <path d="M16 8L22 16L16 24L10 16L16 8Z" fill="white" fill-opacity="0.9" />
+        </svg>
+        <h1 style="font-size: 28px; font-weight: 600; letter-spacing: -0.5px;">Jatayu</h1>
+      </div>
+      <p style="font-size: 14px; color: rgba(255, 255, 255, 0.4);">Autonomous Fraud Detection &amp; Response Network</p>
     </div>
 
     <!-- Dropzone card -->
     <div class="glass w-full max-w-xl p-10">
       <div id="dropzone" class="border-2 border-dashed border-white/20 rounded-xl p-14 flex flex-col items-center
-             justify-center gap-4 cursor-pointer hover:border-indigo-500/60 transition-colors">
+             justify-center gap-4 cursor-pointer hover:border-white/30 transition-colors">
         <div class="relative">
-          <div class="pulse-ring absolute inset-0 rounded-full bg-indigo-500/20"></div>
+          <div class="pulse-ring absolute inset-0 rounded-full" style="background: rgba(255,255,255,0.06);"></div>
           <div class="relative w-16 h-16 glass flex items-center justify-center rounded-full">
-            <i class="ph ph-upload-simple text-3xl text-indigo-400"></i>
+            <i class="ph ph-upload-simple text-3xl" style="color: rgba(255,255,255,0.7);"></i>
           </div>
         </div>
         <div class="text-center">
           <p class="text-white font-semibold text-base">Drop your CSV file here</p>
-          <p class="text-slate-400 text-sm mt-1">PaySim-format transaction data</p>
+          <p style="font-size: 13px; color: rgba(255,255,255,0.4); margin-top: 4px;">PaySim-format transaction data</p>
         </div>
-        <button id="browse-btn" class="px-5 py-2 rounded-xl bg-indigo-600/80 hover:bg-indigo-500/80 border border-indigo-500/50
-               text-white text-sm font-medium transition-all">
+        <button id="browse-btn"
+          style="background:#ffffff; color:#000000; font-weight:600; border-radius:10px; font-size:13px; padding: 8px 20px; border:none; cursor:pointer; transition: all 0.2s ease;"
+          onmouseover="this.style.background='rgba(255,255,255,0.9)'; this.style.transform='translateY(-1px)';"
+          onmouseout="this.style.background='#ffffff'; this.style.transform='translateY(0)';">
           Browse Files
         </button>
-        <p class="text-slate-500 text-xs">CSV up to 500 rows processed per run</p>
+        <p style="font-size: 12px; color: rgba(255,255,255,0.3);">CSV up to 500 rows processed per run</p>
       </div>
       <input id="file-input" type="file" accept=".csv" class="hidden" />
     </div>
 
     <!-- Feature pills -->
     <div class="flex flex-wrap gap-3 mt-8 justify-center">
-      <span class="glass px-3 py-1.5 text-xs text-slate-400 flex items-center gap-1.5">
-        <i class="ph ph-brain text-indigo-400"></i> GraphSAGE + XGBoost
+      <span class="glass px-3 py-1.5 text-xs flex items-center gap-1.5" style="color: rgba(255,255,255,0.5);">
+        <i class="ph ph-brain" style="color: rgba(255,255,255,0.6);"></i> GraphSAGE + XGBoost
       </span>
-      <span class="glass px-3 py-1.5 text-xs text-slate-400 flex items-center gap-1.5">
-        <i class="ph ph-graph text-purple-400"></i> 5-Agent Pipeline
+      <span class="glass px-3 py-1.5 text-xs flex items-center gap-1.5" style="color: rgba(255,255,255,0.5);">
+        <i class="ph ph-graph" style="color: rgba(255,255,255,0.6);"></i> 5-Agent Pipeline
       </span>
-      <span class="glass px-3 py-1.5 text-xs text-slate-400 flex items-center gap-1.5">
-        <i class="ph ph-lightning text-yellow-400"></i> Real-time WebSocket
+      <span class="glass px-3 py-1.5 text-xs flex items-center gap-1.5" style="color: rgba(255,255,255,0.5);">
+        <i class="ph ph-lightning" style="color: rgba(255,255,255,0.6);"></i> Real-time WebSocket
       </span>
-      <span class="glass px-3 py-1.5 text-xs text-slate-400 flex items-center gap-1.5">
-        <i class="ph ph-shield-check text-green-400"></i> Compliance Logging
+      <span class="glass px-3 py-1.5 text-xs flex items-center gap-1.5" style="color: rgba(255,255,255,0.5);">
+        <i class="ph ph-shield-check" style="color: rgba(255,255,255,0.6);"></i> Compliance Logging
       </span>
     </div>
   </div>
@@ -449,14 +414,20 @@
 
     <!-- Header bar -->
     <div class="flex items-center justify-between mb-6 max-w-7xl mx-auto">
-      <div>
-        <h1 class="text-xl font-bold text-white flex items-center gap-2">
-          <i class="ph ph-shield-check text-indigo-400"></i> Jatayu AFDRN
-        </h1>
-        <p class="text-slate-500 text-xs mt-0.5">Fraud Detection &amp; Response Network</p>
+      <div class="flex items-center gap-3">
+        <svg width="28" height="28" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="32" height="32" rx="8" fill="white" fill-opacity="0.08" />
+          <path d="M16 8L22 16L16 24L10 16L16 8Z" fill="white" fill-opacity="0.9" />
+        </svg>
+        <div>
+          <h1 style="font-size: 17px; font-weight: 600; letter-spacing: -0.3px;">Jatayu AFDRN</h1>
+          <p style="font-size: 12px; color: rgba(255,255,255,0.4); margin-top: 1px;">Fraud Detection &amp; Response Network</p>
+        </div>
       </div>
       <button onclick="location.reload()"
-        class="glass px-4 py-2 text-xs text-slate-300 hover:text-white flex items-center gap-1.5 transition-colors">
+        style="background: rgba(255,255,255,0.06); color: #ffffff; font-weight: 500; border-radius: 10px; border: 1px solid rgba(255,255,255,0.08); font-size: 13px; padding: 8px 16px; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.2s ease;"
+        onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.borderColor='rgba(255,255,255,0.12)';"
+        onmouseout="this.style.background='rgba(255,255,255,0.06)'; this.style.borderColor='rgba(255,255,255,0.08)';">
         <i class="ph ph-arrow-counter-clockwise"></i> New Upload
       </button>
     </div>
@@ -647,8 +618,8 @@
   <!-- ════════════════════════════════════════════════════════════════════════
      Floating Navigation Bar
      ════════════════════════════════════════════════════════════════════════ -->
-  <nav id="floating-nav" class="hidden fixed bottom-5 left-1/2 -translate-x-1/2 z-50 px-2 py-1 rounded-2xl
-         bg-white/10 backdrop-blur-2xl border border-white/20 shadow-2xl" style="max-width: calc(100vw - 2rem);">
+  <nav id="floating-nav" class="hidden fixed bottom-5 left-1/2 -translate-x-1/2 z-50 px-2 py-1 rounded-2xl shadow-2xl"
+       style="background: rgba(0,0,0,0.8); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.08); max-width: calc(100vw - 2rem);">
     <div id="nav-tabs" class="relative flex items-center gap-0.5 overflow-x-auto">
       <div id="nav-indicator"></div>
       <!-- Tab buttons injected by nav.js -->

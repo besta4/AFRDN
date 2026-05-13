@@ -18,6 +18,8 @@ import random
 from pathlib import Path
 from typing import Any
 
+import requests
+
 import numpy as np
 
 from agents.base_agent import BaseAgent
@@ -277,6 +279,273 @@ class TransactionMonitoringAgent(BaseAgent):
         ]
         top_feats = random.sample(_stub_top_features, k=5)
         return round(base_score, 6), top_feats
+
+    # ── Feature builder — reusable by score() and explain() ─────────────────
+
+    def _build_features(self, msg: TransactionMessage) -> dict:
+        """
+        Extract and return a dict of all named features used by the XGBoost
+        model for the given transaction message.
+
+        Returns a dict: {feature_name: float_value}
+        The order matches the assembled x_vec in score().
+        """
+        # GNN embedding lookup
+        emb_dim = int(self.embeddings.shape[1]) if self.embeddings is not None else 64
+        if (
+            self.embeddings is not None
+            and self.user_map is not None
+            and msg.nameOrig in self.user_map
+        ):
+            idx = self.user_map[msg.nameOrig]
+            try:
+                emb = list(map(float, self.embeddings[idx]))
+            except Exception:  # noqa: BLE001
+                emb = [0.0] * emb_dim
+        else:
+            emb = [0.0] * emb_dim
+
+        balance_diff_orig = float(msg.oldbalanceOrg) - float(msg.newbalanceOrig)
+        balance_diff_dest = float(msg.newbalanceDest) - float(msg.oldbalanceDest)
+        amount_to_balance_ratio = (
+            float(msg.amount) / (float(msg.oldbalanceOrg) + 1.0)
+            if msg.oldbalanceOrg is not None
+            else 0.0
+        )
+
+        type_order = [
+            TransactionType.PAYMENT,
+            TransactionType.TRANSFER,
+            TransactionType.CASH_IN,
+            TransactionType.CASH_OUT,
+            TransactionType.DEBIT,
+        ]
+        type_dummies = {f"type_{t.value}": (1.0 if msg.type == t else 0.0) for t in type_order}
+
+        tabular = {
+            "step": float(msg.step),
+            "amount": float(msg.amount),
+            "oldbalanceOrg": float(msg.oldbalanceOrg),
+            "newbalanceOrig": float(msg.newbalanceOrig),
+            "oldbalanceDest": float(msg.oldbalanceDest),
+            "newbalanceDest": float(msg.newbalanceDest),
+            "balance_diff_orig": balance_diff_orig,
+            "balance_diff_dest": balance_diff_dest,
+            "amount_to_balance_ratio": amount_to_balance_ratio,
+        }
+        tabular.update(type_dummies)
+        for i, val in enumerate(emb):
+            tabular[f"gnn_emb_{i}"] = val
+
+        return tabular
+
+    # ── Explainability method ─────────────────────────────────────────────────
+
+    def explain(self, msg: TransactionMessage) -> dict:
+        """
+        Compute an end-to-end explanation for a single transaction.
+
+        Returns a structured dict:
+          {
+            "fraud_score": float,
+            "threshold": float,
+            "model_version": str,
+            "threshold_source": str,
+            "top_positive_features": [{"feature": str, "contribution": float}],
+            "top_negative_features": [{"feature": str, "contribution": float}],
+            "rationale": str,
+          }
+
+        Attribution strategy:
+          - If real XGBoost model with feature_importances_ is loaded,
+            compute signed contributions = importance_weight * feature_value
+            (normalised so contributions are in a comparable range).
+          - In stub mode, return informative placeholder attributions derived
+            from hand-crafted feature values.
+        """
+        # ── 1. Fraud score ────────────────────────────────────────────────────
+        fraud_score, _ = self.score(msg)
+
+        # ── 2. Feature attributions ───────────────────────────────────────────
+        features = self._build_features(msg)
+
+        attributions: list[tuple[str, float]] = []
+
+        if (
+            not self._stub_mode
+            and self.xgb_model is not None
+            and self.feature_importances is not None
+            and self.feature_names is not None
+        ):
+            # Real model path: signed contribution = importance * feature_value
+            importances = list(map(float, self.feature_importances))
+            names = list(self.feature_names)
+            total_imp = sum(abs(v) for v in importances) or 1.0
+            for name, imp in zip(names, importances):
+                feat_val = features.get(name, 0.0)
+                # Normalise importance then scale by feature value direction
+                contrib = (imp / total_imp) * feat_val
+                attributions.append((name, round(contrib, 4)))
+        else:
+            # Stub path: use known important features with heuristic contributions
+            key_features = [
+                ("amount_to_balance_ratio", features.get("amount_to_balance_ratio", 0.0) * 0.4),
+                ("balance_diff_orig",       features.get("balance_diff_orig", 0.0) / (features.get("amount", 1) + 1) * 0.3),
+                ("oldbalanceOrg",           -features.get("oldbalanceOrg", 0.0) / 1e6 * 0.15),
+                ("amount",                  features.get("amount", 0.0) / 1e5 * 0.1),
+                ("newbalanceOrig",          -features.get("newbalanceOrig", 0.0) / 1e6 * 0.05),
+            ]
+            # Add some GNN dims
+            for i in range(min(3, len([k for k in features if k.startswith("gnn_emb")]))):
+                gnn_val = features.get(f"gnn_emb_{i}", 0.0)
+                key_features.append((f"gnn_emb_{i}", round(gnn_val * 0.02, 4)))
+            attributions = [(k, round(float(v), 4)) for k, v in key_features]
+
+        # Sort by absolute contribution magnitude
+        attributions.sort(key=lambda x: abs(x[1]), reverse=True)
+
+        # Split into positive (risk-increasing) and negative (risk-reducing)
+        top_positive = [
+            {"feature": f, "contribution": c}
+            for f, c in attributions
+            if c > 0
+        ][:5]
+        top_negative = [
+            {"feature": f, "contribution": c}
+            for f, c in attributions
+            if c < 0
+        ][:5]
+
+        # ── 3. LLM rationale ─────────────────────────────────────────────────
+        rationale = self._generate_rationale(
+            fraud_score=fraud_score,
+            threshold=self.threshold,
+            top_positive=top_positive,
+            top_negative=top_negative,
+        )
+
+        return {
+            "fraud_score": round(fraud_score, 6),
+            "threshold": self.threshold,
+            "model_version": self.model_version,
+            "threshold_source": "config.json" if not self._stub_mode else "built-in default",
+            "top_positive_features": top_positive,
+            "top_negative_features": top_negative,
+            "rationale": rationale,
+        }
+
+    def _generate_rationale(
+        self,
+        fraud_score: float,
+        threshold: float,
+        top_positive: list[dict],
+        top_negative: list[dict],
+        timeout: int = 20,
+    ) -> str:
+        """
+        Call the local LFM2.5-1.2B-Instruct model (llama.cpp server) to generate
+        a concise human-readable fraud explanation.  Uses streaming internally
+        to collect the response, then returns the assembled text.
+
+        Falls back to a template-based rationale on any error.
+        """
+        try:
+            pos_parts = ", ".join(
+                f"{f['feature']} (+{f['contribution']:.2f})" for f in top_positive[:3]
+            )
+            neg_parts = ", ".join(
+                f"{f['feature']} ({f['contribution']:.2f})" for f in top_negative[:3]
+            )
+
+            verdict = "HIGH RISK" if fraud_score >= threshold else "LOW RISK"
+            user_content = (
+                f"Fraud score: {fraud_score:.4f} (threshold: {threshold:.4f}, verdict: {verdict}).\n"
+                f"Top risk-increasing features: {pos_parts or 'none'}.\n"
+                f"Top risk-reducing features: {neg_parts or 'none'}.\n"
+                "Write one concise sentence explaining this fraud decision "
+                "in plain English. Reference specific feature names and their "
+                "contributions."
+            )
+
+            payload = {
+                "model": "LFM2.5-1.2B-Instruct",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a fraud analyst. Given a fraud score, "
+                            "key contributing features, and their signed contributions, "
+                            "explain in one concise sentence why the transaction was scored "
+                            "as it was. Be specific about features. Do not add extra text."
+                        ),
+                    },
+                    {"role": "user", "content": user_content},
+                ],
+                "temperature": 0.3,
+                "max_tokens": 120,
+                "stream": True,
+            }
+
+            # Streaming call — collect chunks
+            collected = []
+            with requests.post(
+                "http://localhost:8080/v1/chat/completions",
+                json=payload,
+                stream=True,
+                timeout=timeout,
+            ) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    decoded = line.decode("utf-8") if isinstance(line, bytes) else line
+                    if decoded.startswith("data: "):
+                        raw = decoded[6:].strip()
+                        if raw == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(raw)
+                            delta = (
+                                chunk.get("choices", [{}])[0]
+                                .get("delta", {})
+                                .get("content", "")
+                            )
+                            if delta:
+                                collected.append(delta)
+                        except json.JSONDecodeError:
+                            pass
+
+            rationale = "".join(collected).strip()
+            if not rationale:
+                raise ValueError("Empty rationale from LLM")
+            return rationale
+
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[%s] LLM rationale generation failed (%s). Using template fallback.",
+                self.name,
+                exc,
+            )
+            # Template-based fallback
+            pos_str = ", ".join(
+                f"{f['feature']} (+{f['contribution']:.2f})" for f in top_positive[:3]
+            )
+            neg_str = ", ".join(
+                f"{f['feature']} ({f['contribution']:.2f})" for f in top_negative[:2]
+            )
+            verdict = "High risk" if fraud_score >= threshold else "Low risk"
+            if pos_str and neg_str:
+                return (
+                    f"{verdict} due to {pos_str}, "
+                    f"partially offset by {neg_str}."
+                )
+            elif pos_str:
+                return f"{verdict} driven primarily by {pos_str}."
+            else:
+                return (
+                    f"{verdict} transaction — fraud score {fraud_score:.4f} "
+                    f"vs threshold {threshold:.4f}."
+                )
 
     def _process(self, msg: TransactionMessage) -> TransactionMessage:
         fraud_score, top_features = self.score(msg)

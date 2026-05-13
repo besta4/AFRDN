@@ -115,26 +115,26 @@ async def deposit_funds(
     target_user = db.get_user_by_id(body.user_id)
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
-    
+
     if body.amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be positive")
-    
+
     # Get primary account
     account = db.get_primary_account(body.user_id)
     if not account:
         raise HTTPException(status_code=400, detail="User has no primary account")
-    
+
     # Credit the account
     success = db.credit_balance(account["account_id"], body.amount)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to deposit funds")
-    
+
     # Get updated balance
     updated_account = db.get_account(account["account_id"])
-    
+
     # Log audit
     print(f"[ADMIN DEPOSIT] Admin {user.user_id} deposited ₹{body.amount} to {body.user_id}. Reason: {body.reason}")
-    
+
     return {
         "message": f"Successfully deposited ₹{body.amount:,.2f} to {body.user_id}",
         "new_balance": updated_account["balance"],
@@ -231,6 +231,111 @@ async def block_transaction(
     )
 
     return {"message": "Transaction blocked and reversed", "transaction_id": transaction_id}
+
+
+@router.get("/fraud/{transaction_id}/explain")
+async def explain_transaction(
+    transaction_id: str,
+    user: TokenData = Depends(require_admin),
+):
+    """
+    Stream an XAI explanation for a single transaction via Server-Sent Events.
+
+    The client receives a sequence of SSE events:
+      - event: chunk   data: <partial rationale text>
+      - event: result  data: <full JSON explanation dict>
+      - event: done    data: {}
+      - event: error   data: <message>   (on failure)
+    """
+    import asyncio
+    import json as _json
+    from fastapi.responses import StreamingResponse
+    from agents.transaction_monitoring_agent import TransactionMonitoringAgent
+    from agents.models import TransactionMessage, TransactionType
+
+    # ── 1. Fetch transaction from DB ──────────────────────────────────────────
+    txn = db.get_transaction(transaction_id)
+    if not txn:
+        raise HTTPException(status_code=404, detail=f"Transaction {transaction_id!r} not found")
+
+    # ── 2. Reconstruct TransactionMessage from DB fields ──────────────────────
+    # DB column → TransactionMessage field mapping:
+    #   transaction_id       → transaction_id
+    #   step                 → step
+    #   type                 → type  (str → TransactionType enum)
+    #   amount               → amount
+    #   sender_id            → nameOrig
+    #   receiver_id          → nameDest
+    #   old_balance_sender   → oldbalanceOrg
+    #   new_balance_sender   → newbalanceOrig
+    #   old_balance_receiver → oldbalanceDest
+    #   new_balance_receiver → newbalanceDest
+    #   ip_address           → ip_address
+    #   device_id            → device_id
+    try:
+        txn_type_str = (txn.get("type") or "PAYMENT").upper()
+        try:
+            txn_type = TransactionType(txn_type_str)
+        except ValueError:
+            txn_type = TransactionType.PAYMENT
+
+        msg = TransactionMessage(
+            transaction_id=txn["transaction_id"],
+            step=int(txn.get("step") or 0),
+            type=txn_type,
+            amount=float(txn.get("amount") or 0.0),
+            nameOrig=str(txn.get("sender_id") or ""),
+            nameDest=str(txn.get("receiver_id") or ""),
+            oldbalanceOrg=float(txn.get("old_balance_sender") or 0.0),
+            newbalanceOrig=float(txn.get("new_balance_sender") or 0.0),
+            oldbalanceDest=float(txn.get("old_balance_receiver") or 0.0),
+            newbalanceDest=float(txn.get("new_balance_receiver") or 0.0),
+            ip_address=str(txn.get("ip_address") or ""),
+            device_id=str(txn.get("device_id") or ""),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to reconstruct TransactionMessage: {exc}",
+        ) from exc
+
+    # ── 3. Stream explanation via SSE ─────────────────────────────────────────
+    async def event_generator():
+        try:
+            # Run the synchronous explain() call in a thread pool so we
+            # don’t block the async event loop.
+            loop = asyncio.get_event_loop()
+            agent = TransactionMonitoringAgent()
+
+            explanation = await loop.run_in_executor(None, agent.explain, msg)
+
+            # Stream the rationale word-by-word for a typing effect
+            rationale: str = explanation.get("rationale", "")
+            words = rationale.split()
+            chunk_size = 3  # emit 3 words at a time
+            for i in range(0, len(words), chunk_size):
+                chunk_text = " ".join(words[i : i + chunk_size])
+                if i + chunk_size < len(words):
+                    chunk_text += " "
+                yield f"event: chunk\ndata: {_json.dumps(chunk_text)}\n\n"
+                await asyncio.sleep(0.05)  # small delay for streaming feel
+
+            # Emit the full structured result
+            yield f"event: result\ndata: {_json.dumps(explanation)}\n\n"
+            yield "event: done\ndata: {}\n\n"
+
+        except Exception as exc:
+            logger.error("[explain] Error generating explanation for %s: %s", transaction_id, exc, exc_info=True)
+            yield f"event: error\ndata: {_json.dumps(str(exc))}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/fraud/patterns")
@@ -433,24 +538,24 @@ async def simulate_fraud_pattern(
 ):
     """
     Simulate fraud patterns to test the 5-agent pipeline detection.
-    
+
     This creates synthetic transactions that should trigger pattern detection:
     - MULE_NETWORK: Multiple senders to same collector
-    - ACCOUNT_TAKEOVER: New device/IP with high amount  
+    - ACCOUNT_TAKEOVER: New device/IP with high amount
     - VELOCITY_SPIKE: Rapid transactions from same sender
-    
+
     Returns detection results for each simulated transaction.
     """
     from agents.orchestrator import Orchestrator
     from agents.models import TransactionMessage, TransactionType, TrafficMode, PatternType
-    
+
     logger.info("=" * 70)
     logger.info(f"[FRAUD SIMULATION] Starting {body.pattern_type} simulation with {body.num_transactions} transactions")
     logger.info("=" * 70)
-    
+
     results = []
     orchestrator = Orchestrator()
-    
+
     # Shared collector for mule network
     mule_collector = f"M{uuid.uuid4().hex[:9].upper()}"
     # Shared sender for velocity spike
@@ -459,18 +564,18 @@ async def simulate_fraud_pattern(
     ato_victim = f"C{uuid.uuid4().hex[:9].upper()}"
     ato_known_ip = "ip_100"
     ato_known_device = "device_100"
-    
+
     # Pre-populate history for ATO victim (so they have "known" devices/IPs)
     if body.pattern_type == "ACCOUNT_TAKEOVER":
         orchestrator.agent2._user_ip_history[ato_victim].add(ato_known_ip)
         orchestrator.agent2._user_device_history[ato_victim].add(ato_known_device)
         logger.info(f"[FRAUD SIMULATION] Pre-populated ATO victim {ato_victim} with known IP/device")
-    
+
     base_step = 100  # Starting step for timing
-    
+
     for i in range(body.num_transactions):
         txn_id = f"TEST_{uuid.uuid4().hex[:12].upper()}"
-        
+
         if body.pattern_type == "MULE_NETWORK":
             # Different senders, same collector, within 5 steps
             # Realistic amounts: Rs 8,000 - Rs 45,000 (like in real mule networks)
@@ -493,7 +598,7 @@ async def simulate_fraud_pattern(
                 device_id=f"device_{500 + i}",
             )
             logger.info(f"[MULE_NETWORK] Txn {i+1}: {sender} -> {mule_collector} (Rs {msg.amount:,.0f})")
-            
+
         elif body.pattern_type == "ACCOUNT_TAKEOVER":
             # Same victim, NEW IP/device each time
             # Realistic amounts: Rs 30,000 - Rs 80,000 (account draining attempts)
@@ -515,7 +620,7 @@ async def simulate_fraud_pattern(
                 device_id=f"device_{900 + i}",  # NEW suspicious device
             )
             logger.info(f"[ACCOUNT_TAKEOVER] Txn {i+1}: {ato_victim} from NEW device_{900 + i}/ip_{900 + i} (Rs {msg.amount:,.0f})")
-            
+
         elif body.pattern_type == "VELOCITY_SPIKE":
             # Same sender, rapid transactions
             velocity_amounts = [5000, 8000, 12000, 15000, 20000, 10000, 7000, 18000, 9000, 25000]
@@ -538,29 +643,29 @@ async def simulate_fraud_pattern(
             logger.info(f"[VELOCITY_SPIKE] Txn {i+1}: {velocity_sender} rapid transaction #{i+1} (Rs {msg.amount:,.0f})")
         else:
             raise HTTPException(status_code=400, detail=f"Unknown pattern type: {body.pattern_type}")
-        
+
         # Run through the FULL pipeline
         start_time = time.time()
-        
+
         # Agent 1: Transaction Monitoring - ALWAYS run to get real ML score
         logger.info(f"  [Agent 1] Processing transaction {txn_id}...")
         msg = orchestrator.agent1.process(msg)
         a1_latency = (time.time() - start_time) * 1000
         logger.info(f"  [Agent 1] Fraud Score: {msg.fraud_score:.4f}, Label: {msg.fraud_label} ({a1_latency:.1f}ms)")
-        
+
         # Add to rolling buffer if:
         # 1. fraud_label is True (Agent 1 flagged it), OR
         # 2. fraud_score > 20% (high enough to warrant pattern analysis), OR
         # 3. It's a pattern simulation (MULE_NETWORK, VELOCITY_SPIKE)
         should_add_to_buffer = (
-            msg.fraud_label or 
+            msg.fraud_label or
             (msg.fraud_score and msg.fraud_score > 0.20) or
             body.pattern_type in ["MULE_NETWORK", "VELOCITY_SPIKE"]
         )
         if should_add_to_buffer:
             orchestrator.rolling_buffer.append(msg)
             logger.info(f"  [Buffer] Added to rolling buffer (score={msg.fraud_score:.2%}). Buffer size: {len(orchestrator.rolling_buffer)}")
-        
+
         # Agent 2: Pattern Detection
         a2_start = time.time()
         logger.info(f"  [Agent 2] Analyzing patterns (buffer={len(orchestrator.rolling_buffer)})...")
@@ -570,7 +675,7 @@ async def simulate_fraud_pattern(
         logger.info(f"  [Agent 2] Pattern: {pattern_name}, Confidence: {msg.pattern_confidence:.2f} ({a2_latency:.1f}ms)")
         if msg.pattern_reasoning:
             logger.info(f"  [Agent 2] LLM Reasoning: {msg.pattern_reasoning}")
-        
+
         # Agent 3: Risk Assessment
         a3_start = time.time()
         account_hints = {
@@ -583,22 +688,22 @@ async def simulate_fraud_pattern(
         risk_name = msg.risk_level.value if msg.risk_level else "LOW"
         action_name = msg.recommended_action.value if msg.recommended_action else "PASS"
         logger.info(f"  [Agent 3] Risk: {risk_name}, Action: {action_name} ({a3_latency:.1f}ms)")
-        
+
         # Agent 4: Alert & Block
         a4_start = time.time()
         msg = orchestrator.agent4.process(msg)
         a4_latency = (time.time() - a4_start) * 1000
         final_action = msg.action_taken.value if msg.action_taken else "PASS"
         logger.info(f"  [Agent 4] Final Action: {final_action} ({a4_latency:.1f}ms)")
-        
+
         # Agent 5: Compliance Logging
         a5_start = time.time()
         msg = orchestrator.agent5.process(msg)
         a5_latency = (time.time() - a5_start) * 1000
         logger.info(f"  [Agent 5] Audit logged ({a5_latency:.1f}ms)")
-        
+
         total_latency = (time.time() - start_time) * 1000
-        
+
         # Save transaction to database for admin panel visibility
         # Use existing demo users to satisfy foreign key constraints
         try:
@@ -606,18 +711,18 @@ async def simulate_fraud_pattern(
             step = now.hour + (now.day * 24)
             # Map action to valid status: BLOCKED, HELD, or COMPLETED
             status_val = "BLOCKED" if final_action == "BLOCK" else ("HELD" if final_action == "HOLD" else "COMPLETED")
-            
+
             # Get existing user IDs for sender/receiver to satisfy FK constraints
             with db.get_conn() as conn:
                 users = conn.execute("SELECT user_id FROM users WHERE user_type = 'CUSTOMER' LIMIT 2").fetchall()
                 if len(users) >= 2:
                     sender_user_id = users[0][0]
                     receiver_user_id = users[1][0]
-                    
+
                     # Get their accounts
                     sender_acct = conn.execute("SELECT account_id FROM accounts WHERE user_id = ?", (sender_user_id,)).fetchone()
                     receiver_acct = conn.execute("SELECT account_id FROM accounts WHERE user_id = ?", (receiver_user_id,)).fetchone()
-                    
+
                     if sender_acct and receiver_acct:
                         conn.execute(
                             """INSERT INTO transactions
@@ -628,7 +733,7 @@ async def simulate_fraud_pattern(
                                 pattern_type, pattern_confidence, risk_level, recommended_action,
                                 action_taken, explanation, pipeline_latency_ms)
                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                            (txn_id, step, msg.type.value, msg.amount, 
+                            (txn_id, step, msg.type.value, msg.amount,
                              sender_user_id, sender_acct[0],
                              receiver_user_id, receiver_acct[0],
                              msg.oldbalanceOrg or 0, msg.newbalanceOrig or 0,
@@ -648,7 +753,7 @@ async def simulate_fraud_pattern(
                     logger.warning("  [DB] Not enough demo users to save transaction")
         except Exception as e:
             logger.error(f"  [DB] Failed to save transaction: {e}")
-        
+
         result = {
             "transaction_id": txn_id,
             "index": i + 1,
@@ -675,22 +780,22 @@ async def simulate_fraud_pattern(
             "buffer_size": len(orchestrator.rolling_buffer),
         }
         results.append(result)
-        
+
         logger.info(f"  [COMPLETE] Txn {i+1}/{body.num_transactions}: {pattern_name} detected, {final_action}")
         logger.info("-" * 50)
-    
+
     # Summary
     patterns_detected = sum(1 for r in results if r["pattern_type"] != "NONE")
     blocked = sum(1 for r in results if r["action_taken"] == "BLOCK")
     held = sum(1 for r in results if r["action_taken"] == "HOLD")
-    
+
     logger.info("=" * 70)
     logger.info(f"[FRAUD SIMULATION COMPLETE] {body.pattern_type}")
     logger.info(f"  Total Transactions: {body.num_transactions}")
     logger.info(f"  Patterns Detected: {patterns_detected}")
     logger.info(f"  Blocked: {blocked}, Held: {held}")
     logger.info("=" * 70)
-    
+
     return {
         "simulation_type": body.pattern_type,
         "total_transactions": body.num_transactions,
