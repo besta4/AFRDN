@@ -10,6 +10,9 @@ import secrets
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from auth.models import TokenData
+from config import load_environment
+
+load_environment()
 
 # Secret key for JWT signing - in production, load from environment
 # Generate a new one: secrets.token_urlsafe(32)

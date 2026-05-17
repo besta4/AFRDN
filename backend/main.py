@@ -9,7 +9,7 @@ Endpoints:
   GET  /audit               — audit trail (all tasks or filtered by task_id)
   GET  /tasks               — list all uploaded tasks
 
-Serve the frontend from /static and / → index.html.
+Serve the frontend from /static and / -> login.html.
 """
 
 from __future__ import annotations
@@ -31,6 +31,11 @@ from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSock
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+
+BACKEND_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BACKEND_DIR.parent
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
 
 from database import (
     create_task,
@@ -60,6 +65,10 @@ from routers import (
 
 def setup_logging():
     """Configure comprehensive logging for the fraud detection system."""
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     log_format = "%(asctime)s | %(levelname)-8s | %(name)-30s | %(message)s"
     date_format = "%Y-%m-%d %H:%M:%S"
     
@@ -129,7 +138,9 @@ app.include_router(admin_router)
 app.include_router(merchant_router)
 app.include_router(support_router)
 
-STATIC_DIR = Path(__file__).parent / "static"
+STATIC_DIR = PROJECT_ROOT / "frontend"
+if not STATIC_DIR.exists():
+    STATIC_DIR = BACKEND_DIR / "static"
 
 
 # ── CSV column normalisation ──────────────────────────────────────────────────
@@ -1054,4 +1065,4 @@ if STATIC_DIR.exists():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)

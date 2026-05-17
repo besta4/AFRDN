@@ -71,6 +71,7 @@ class PatternType(str, Enum):
     MULE_NETWORK     = "MULE_NETWORK"
     ACCOUNT_TAKEOVER = "ACCOUNT_TAKEOVER"
     VELOCITY_SPIKE   = "VELOCITY_SPIKE"
+    CIRCULAR_FLOW    = "CIRCULAR_FLOW"
 
 
 class RiskLevel(str, Enum):

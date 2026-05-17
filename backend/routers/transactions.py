@@ -752,6 +752,19 @@ def _run_fraud_pipeline_sync(
             )
             _flow_step_pause()
 
+        # Record transaction in Redis dynamic graph cache (between Agent 1 & 2)
+        graph_cache = getattr(orchestrator, 'graph_cache', None)
+        if graph_cache and graph_cache.available:
+            try:
+                graph_cache.record_transaction(
+                    sender_id=sender_id,
+                    receiver_id=receiver_id,
+                    amount=amount,
+                    transaction_id=transaction_id,
+                )
+            except Exception:
+                pass  # graceful degradation
+
         # Add ALL transactions to rolling buffer for pattern detection
         orchestrator.rolling_buffer.append(result)
 

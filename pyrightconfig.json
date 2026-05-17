@@ -1,6 +1,12 @@
 {
-  "include": ["."],
-  "pythonVersion": "3.11",
+  "include": ["backend", "tests", "start.py"],
+  "exclude": [
+    "backend/data",
+    "backend/models",
+    "docs/research",
+    "**/__pycache__"
+  ],
+  "pythonVersion": "3.12",
   "reportMissingImports": true,
   "reportMissingModuleSource": false
 }

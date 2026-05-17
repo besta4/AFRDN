@@ -209,7 +209,7 @@ const AGENT_CONFIG = [
     key: "agent3",
     num: "3",
     label: "Risk Assessment",
-    subtitle: "PPO · risk_ppo_2.pt",
+    subtitle: "Rules · PPO-ready",
     icon: "scales",
     accent: "blue",
     renderer: renderAgent3,

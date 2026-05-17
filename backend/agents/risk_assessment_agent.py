@@ -14,29 +14,24 @@ from __future__ import annotations
 import logging
 import dataclasses
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING
-
+from typing import Any, Callable, Iterable, List, Optional, Sequence, Tuple
+import typing
 import math
 
-torch: Any
-nn: Any
-optim: Any
-
-if TYPE_CHECKING:  # pragma: no cover
-    import torch as torch  # noqa: F401
-    import torch.nn as nn  # noqa: F401
-    import torch.optim as optim  # noqa: F401
+if typing.TYPE_CHECKING:  # pragma: no cover
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
 
 try:
     import torch
     import torch.nn as nn
     import torch.optim as optim
-
     _TORCH_AVAILABLE = True
-except Exception:  # pragma: no cover - graceful degradation
-    torch = None  # type: ignore
-    nn = None  # type: ignore
-    optim = None  # type: ignore
+except ImportError:  # pragma: no cover - graceful degradation
+    torch = typing.cast(typing.Any, None)
+    nn = typing.cast(typing.Any, None)
+    optim = typing.cast(typing.Any, None)
     _TORCH_AVAILABLE = False
 
 from agents.base_agent import BaseAgent
@@ -67,6 +62,10 @@ PATTERN_SPACE: List[PatternType] = [
     PatternType.ACCOUNT_TAKEOVER,
     PatternType.VELOCITY_SPIKE,
 ]
+
+PPO_PATTERN_ALIASES: dict[PatternType, PatternType] = {
+    PatternType.CIRCULAR_FLOW: PatternType.MULE_NETWORK,
+}
 
 
 def _safe_float(x: Optional[float], default: float = 0.0) -> float:
@@ -99,12 +98,19 @@ def build_state_vector(msg: TransactionMessage, account_context: Optional[dict[s
     inference time and would cause a train/serve distribution shift.
     The pattern one-hot at [2:6] already encodes the same signal from
     observable evidence (Agent 2 output).
+
+    CIRCULAR_FLOW is a newer Agent 2 pattern, while the bundled PPO checkpoint
+    was trained on the original 11-dimensional state. For PPO only, circular
+    flow maps to the MULE_NETWORK bucket because both represent coordinated
+    laundering behavior. Rule-based risk logic still sees CIRCULAR_FLOW as a
+    distinct pattern.
     """
 
     fraud_score = _safe_float(msg.fraud_score, 0.0)
     pattern_confidence = _safe_float(msg.pattern_confidence, 0.0)
 
     pattern = msg.pattern_type or PatternType.NONE
+    pattern = PPO_PATTERN_ALIASES.get(pattern, pattern)
     try:
         pattern_index = PATTERN_SPACE.index(pattern)
     except ValueError:
@@ -396,8 +402,9 @@ class RiskAssessmentAgent(BaseAgent):
         msg.account_context      → dict with supporting context
 
     PPO integration:
-        - By default, if PyTorch is available, the agent instantiates a
-          PPORiskPolicy and uses it for action selection (inference mode).
+        - When explicitly enabled and PyTorch is available, the agent
+          instantiates a PPORiskPolicy and uses it for action selection
+          (inference mode).
         - If PyTorch is unavailable, the agent falls back to the existing
           rule-based decision table.
 
@@ -509,12 +516,18 @@ class RiskAssessmentAgent(BaseAgent):
                 fraud_score = msg.fraud_score or 0.0
                 pattern_type = msg.pattern_type or PatternType.NONE
                 pattern_confidence = msg.pattern_confidence or 0.0
-                risk_level, action = self._decide_rule_based(fraud_score, pattern_type, pattern_confidence)
+                historical_risk = account_context.get("historical_risk", 0.0)
+                risk_level, action = self._decide_rule_based(
+                    fraud_score, pattern_type, pattern_confidence, historical_risk
+                )
         else:
             fraud_score = msg.fraud_score or 0.0
             pattern_type = msg.pattern_type or PatternType.NONE
             pattern_confidence = msg.pattern_confidence or 0.0
-            risk_level, action = self._decide_rule_based(fraud_score, pattern_type, pattern_confidence)
+            historical_risk = account_context.get("historical_risk", 0.0)
+            risk_level, action = self._decide_rule_based(
+                fraud_score, pattern_type, pattern_confidence, historical_risk
+            )
 
         msg.risk_level = risk_level
         msg.recommended_action = action
@@ -524,14 +537,23 @@ class RiskAssessmentAgent(BaseAgent):
     # ── Rule-based fallback (original behavior) ───────────────────────────────
 
     def _decide_rule_based(
-        self, fraud_score: float, pattern_type: PatternType, pattern_confidence: float = 0.0
+        self, fraud_score: float, pattern_type: PatternType,
+        pattern_confidence: float = 0.0, historical_risk: float = 0.0
     ) -> tuple[RiskLevel, Action]:
         """
-        Rule-based risk decision table combining ML fraud score AND pattern detection.
+        Rule-based risk decision table combining ML fraud score + pattern detection
+        + time-decayed historical risk.
 
         Pattern detection (Agent 2) operates independently of ML scoring (Agent 1):
         - ML score: transaction-level fraud probability from XGBoost+GNN model
         - Pattern detection: buffer analysis for coordinated fraud (MULE_NETWORK, VELOCITY_SPIKE, ATO)
+        - Historical risk: composite time-decayed suspicion from Redis decay engine R(t) = R₀ × e^{-λt}
+
+        Historical risk amplification:
+        - Acts as a "memory" that upgrades borderline decisions
+        - A user with decayed risk ≥ 0.30 gets stricter treatment on borderline cases
+        - A user with decayed risk ≥ 0.50 gets even stricter treatment
+        - This prevents repeat offenders from slipping through with "just under threshold" txns
 
         Decision logic:
         | fraud_score | pattern_type                       | pattern_confidence | risk     | action      |
@@ -549,34 +571,57 @@ class RiskAssessmentAgent(BaseAgent):
         coordinated = pattern_type in (
             PatternType.MULE_NETWORK,
             PatternType.ACCOUNT_TAKEOVER,
+            PatternType.CIRCULAR_FLOW,
         )
         
         velocity = pattern_type == PatternType.VELOCITY_SPIKE
         pattern_detected = pattern_type != PatternType.NONE
 
+        # ── Historical risk amplifier ─────────────────────────────────────────
+        # Effective fraud score is boosted by decayed historical risk.
+        # This models "suspicion memory" — a user who was flagged yesterday
+        # gets slightly stricter treatment today, but a user flagged last week
+        # gets almost none (exponential decay).
+        hist_boost = min(0.15, historical_risk * 0.3)  # Max +0.15 boost
+        effective_score = min(1.0, fraud_score + hist_boost)
+
         # Very high ML score - always block
-        if fraud_score >= 0.80:
+        if effective_score >= 0.80:
             return RiskLevel.CRITICAL, Action.BLOCK
         
-        # High-confidence pattern detection - block even with low ML score
-        # This is key: pattern detection is independent evidence of fraud
-        if (coordinated or velocity) and pattern_confidence >= 0.60:
+        # High-confidence coordinated pattern detection - block
+        if coordinated and pattern_confidence >= 0.60:
             return RiskLevel.HIGH, Action.BLOCK
+            
+        # Velocity detection - reduce binary blocking. Only BLOCK if extremely high confidence.
+        if velocity:
+            if pattern_confidence >= 0.85:
+                return RiskLevel.HIGH, Action.BLOCK
+            elif pattern_confidence >= 0.60:
+                return RiskLevel.HIGH, Action.HOLD
         
         # Moderate ML score with coordinated pattern - block
-        if fraud_score >= 0.50 and coordinated:
+        if effective_score >= 0.50 and coordinated:
             return RiskLevel.HIGH, Action.BLOCK
         
         # Moderate ML score without coordination - hold for review
-        if fraud_score >= 0.50:
+        if effective_score >= 0.50:
             return RiskLevel.HIGH, Action.HOLD
         
         # Pattern detected but lower confidence - hold for review
         if pattern_detected:
             return RiskLevel.MEDIUM, Action.HOLD
+
+        # ── Historical risk upgrade for borderline cases ──────────────────────
+        # If no pattern detected and ML score is low, but historical risk is
+        # significant, upgrade from PASS to SILENT_FLAG (flag for monitoring).
+        if historical_risk >= 0.50 and fraud_score >= 0.10:
+            return RiskLevel.MEDIUM, Action.HOLD
+        if historical_risk >= 0.30 and fraud_score >= 0.15:
+            return RiskLevel.MEDIUM, Action.SILENT_FLAG
         
         # Low ML score, no pattern - normal processing
-        if fraud_score >= 0.20:
+        if effective_score >= 0.20:
             return RiskLevel.MEDIUM, Action.SILENT_FLAG
         
         return RiskLevel.LOW, Action.PASS
@@ -615,6 +660,10 @@ class RiskAssessmentAgent(BaseAgent):
             # known user.  Never hard-coded True.
             "is_new_device": hints.get("is_new_device", False),
             "is_new_ip":     hints.get("is_new_ip",     False),
+            # Exponential decay risk — time-weighted historical suspicion
+            # from the Redis-backed decay engine. Ranges [0, 1].
+            "historical_risk": hints.get("historical_risk", 0.0),
+            "decayed_risk_tiers": hints.get("decayed_risk_tiers", {}),
         }
 
     # ── Public hooks for other agents / training scripts ──────────────────────

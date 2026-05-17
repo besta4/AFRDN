@@ -12,17 +12,18 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from typing import Any
 
 from agents.base_agent import BaseAgent
 from agents.models import TransactionMessage
+from config import backend_path_from_env, load_environment
 
 logger = logging.getLogger(__name__)
 
 # Default audit file path (can be overridden via environment variable)
-AUDIT_FILE_PATH = os.environ.get("JATAYU_AUDIT_FILE", "audit.jsonl")
+load_environment()
+AUDIT_FILE_PATH = str(backend_path_from_env("JATAYU_AUDIT_FILE", "data/audit.jsonl"))
 
 
 class ComplianceLoggingAgent(BaseAgent):

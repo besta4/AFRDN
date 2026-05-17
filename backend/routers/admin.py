@@ -58,7 +58,7 @@ async def get_user_details(
         raise HTTPException(status_code=404, detail="User not found")
 
     accounts = db.get_user_accounts(user_id)
-    transactions = db.get_user_transactions(user_id, limit=20)
+    transactions = db.get_user_transactions(user_id, limit=75)
     devices = db.get_user_devices(user_id)
 
     # Calculate stats
@@ -233,6 +233,111 @@ async def block_transaction(
     return {"message": "Transaction blocked and reversed", "transaction_id": transaction_id}
 
 
+@router.get("/fraud/{transaction_id}/explain")
+async def explain_transaction(
+    transaction_id: str,
+    user: TokenData = Depends(require_admin),
+):
+    """
+    Stream an XAI explanation for a single transaction via Server-Sent Events.
+
+    The client receives a sequence of SSE events:
+      - event: chunk   data: <partial rationale text>
+      - event: result  data: <full JSON explanation dict>
+      - event: done    data: {}
+      - event: error   data: <message>   (on failure)
+    """
+    import asyncio
+    import json as _json
+    from fastapi.responses import StreamingResponse
+    from agents.transaction_monitoring_agent import TransactionMonitoringAgent
+    from agents.models import TransactionMessage, TransactionType
+
+    # ── 1. Fetch transaction from DB ──────────────────────────────────────────
+    txn = db.get_transaction(transaction_id)
+    if not txn:
+        raise HTTPException(status_code=404, detail=f"Transaction {transaction_id!r} not found")
+
+    # ── 2. Reconstruct TransactionMessage from DB fields ──────────────────────
+    # DB column → TransactionMessage field mapping:
+    #   transaction_id       → transaction_id
+    #   step                 → step
+    #   type                 → type  (str → TransactionType enum)
+    #   amount               → amount
+    #   sender_id            → nameOrig
+    #   receiver_id          → nameDest
+    #   old_balance_sender   → oldbalanceOrg
+    #   new_balance_sender   → newbalanceOrig
+    #   old_balance_receiver → oldbalanceDest
+    #   new_balance_receiver → newbalanceDest
+    #   ip_address           → ip_address
+    #   device_id            → device_id
+    try:
+        txn_type_str = (txn.get("type") or "PAYMENT").upper()
+        try:
+            txn_type = TransactionType(txn_type_str)
+        except ValueError:
+            txn_type = TransactionType.PAYMENT
+
+        msg = TransactionMessage(
+            transaction_id=txn["transaction_id"],
+            step=int(txn.get("step") or 0),
+            type=txn_type,
+            amount=float(txn.get("amount") or 0.0),
+            nameOrig=str(txn.get("sender_id") or ""),
+            nameDest=str(txn.get("receiver_id") or ""),
+            oldbalanceOrg=float(txn.get("old_balance_sender") or 0.0),
+            newbalanceOrig=float(txn.get("new_balance_sender") or 0.0),
+            oldbalanceDest=float(txn.get("old_balance_receiver") or 0.0),
+            newbalanceDest=float(txn.get("new_balance_receiver") or 0.0),
+            ip_address=str(txn.get("ip_address") or ""),
+            device_id=str(txn.get("device_id") or ""),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to reconstruct TransactionMessage: {exc}",
+        ) from exc
+
+    # ── 3. Stream explanation via SSE ─────────────────────────────────────────
+    async def event_generator():
+        try:
+            # Run the synchronous explain() call in a thread pool so we
+            # don’t block the async event loop.
+            loop = asyncio.get_event_loop()
+            agent = TransactionMonitoringAgent()
+
+            explanation = await loop.run_in_executor(None, agent.explain, msg)
+
+            # Stream the rationale word-by-word for a typing effect
+            rationale: str = explanation.get("rationale", "")
+            words = rationale.split()
+            chunk_size = 3  # emit 3 words at a time
+            for i in range(0, len(words), chunk_size):
+                chunk_text = " ".join(words[i : i + chunk_size])
+                if i + chunk_size < len(words):
+                    chunk_text += " "
+                yield f"event: chunk\ndata: {_json.dumps(chunk_text)}\n\n"
+                await asyncio.sleep(0.05)  # small delay for streaming feel
+
+            # Emit the full structured result
+            yield f"event: result\ndata: {_json.dumps(explanation)}\n\n"
+            yield "event: done\ndata: {}\n\n"
+
+        except Exception as exc:
+            logger.error("[explain] Error generating explanation for %s: %s", transaction_id, exc, exc_info=True)
+            yield f"event: error\ndata: {_json.dumps(str(exc))}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.get("/fraud/patterns")
 async def get_fraud_patterns(
     user: TokenData = Depends(require_admin)
@@ -395,6 +500,15 @@ async def get_system_metrics(
         },
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
+
+
+@router.get("/analytics/trends")
+async def get_analytics_trends(
+    days: int = 30,
+    user: TokenData = Depends(require_admin)
+):
+    """Get daily/hourly fraud operations trends for the admin dashboard."""
+    return db.get_transaction_analytics(days=days)
 
 
 @router.get("/system/kyc-limits")
@@ -705,4 +819,90 @@ async def simulate_fraud_pattern(
             "final_size": len(orchestrator.rolling_buffer),
             "window_ids": [m.transaction_id for m in list(orchestrator.rolling_buffer)[-5:]]
         }
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Risk Decay Engine — Admin Endpoints
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/risk-decay/{user_id}")
+async def get_user_risk_decay(
+    user_id: str,
+    user: TokenData = Depends(require_admin),
+):
+    """
+    Get time-decayed risk scores for a specific user.
+
+    Returns the exponentially decayed risk per tier (velocity, burst, pattern,
+    network) plus a composite weighted score. Scores decay via R(t) = R₀ × e^{-λt}.
+    """
+    from agents.orchestrator import Orchestrator
+    orchestrator = Orchestrator()
+    gc = orchestrator.graph_cache
+
+    if not gc or not gc.available:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Redis graph cache is not available. Risk decay requires Redis.",
+        )
+
+    decayed_tiers = gc.get_decayed_risk(user_id)
+    composite = gc.get_composite_risk(user_id)
+
+    return {
+        "user_id": user_id,
+        "composite_risk": composite,
+        "decayed_tiers": decayed_tiers,
+        "decay_config": {
+            "half_life_short_hours": 1,
+            "half_life_medium_hours": 12,
+            "half_life_long_hours": 72,
+            "floor": 0.01,
+        },
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@router.delete("/risk-decay/{user_id}")
+async def clear_user_risk_decay(
+    user_id: str,
+    tier: Optional[str] = None,
+    user: TokenData = Depends(require_admin),
+):
+    """
+    Clear risk decay scores for a user (admin override / HITL clearance).
+
+    This is used when an analyst confirms that a HOLD was a false positive,
+    allowing the user's suspicion to be manually reset instead of waiting
+    for natural decay.
+
+    Args:
+        tier: Optional. Clear only a specific tier (velocity, burst, pattern, network).
+              If omitted, clears ALL tiers for this user.
+    """
+    from agents.orchestrator import Orchestrator
+    orchestrator = Orchestrator()
+    gc = orchestrator.graph_cache
+
+    if not gc or not gc.available:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Redis graph cache is not available.",
+        )
+
+    valid_tiers = {"velocity", "burst", "pattern", "network"}
+    if tier and tier not in valid_tiers:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid tier '{tier}'. Valid tiers: {sorted(valid_tiers)}",
+        )
+
+    gc.clear_risk(user_id, tier=tier)
+
+    return {
+        "status": "cleared",
+        "user_id": user_id,
+        "tier_cleared": tier or "ALL",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }

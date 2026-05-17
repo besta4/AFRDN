@@ -592,7 +592,7 @@
 
       async function loadTransactions() {
         try {
-          const res = await apiCall("/transactions/?limit=20");
+          const res = await apiCall("/transactions/?limit=75");
           const data = await res.json();
           const list = document.getElementById("transactions-list");
 
@@ -916,18 +916,49 @@
           const message = err?.message || "Transaction failed";
           errorEl.textContent = message;
 
-          if (
+          const isSuspended =
             message.toLowerCase().includes("suspend") ||
-            message.toLowerCase().includes("block")
-          ) {
+            message.toLowerCase().includes("block");
+
+          if (isSuspended) {
+            // Show error with countdown and auto-redirect
+            errorEl.innerHTML = "";
+            const msgSpan = document.createElement("span");
+            msgSpan.textContent = message;
+            errorEl.appendChild(msgSpan);
+            errorEl.appendChild(document.createElement("br"));
+            errorEl.appendChild(document.createElement("br"));
+
+            const redirectMsg = document.createElement("span");
+            redirectMsg.style.color = "#fbbf24";
+            redirectMsg.style.fontWeight = "600";
+            redirectMsg.textContent =
+              "Your account has been suspended. Redirecting to support page in 3s...";
+            errorEl.appendChild(redirectMsg);
+
             errorEl.appendChild(document.createElement("br"));
             const link = document.createElement("a");
             link.href = "/suspended";
-            link.textContent = "Contact Support to Resolve";
+            link.textContent = "Go to Support Page Now";
             link.style.color = "#fbbf24";
             link.style.textDecoration = "underline";
             link.style.fontWeight = "600";
+            link.style.marginTop = "8px";
+            link.style.display = "inline-block";
             errorEl.appendChild(link);
+
+            // Disable all interactive elements
+            const sendBtn = document.getElementById("send-submit-btn");
+            if (sendBtn) {
+              sendBtn.disabled = true;
+              sendBtn.style.opacity = "0.3";
+              sendBtn.style.pointerEvents = "none";
+            }
+
+            // Auto-redirect to suspended page after 3 seconds
+            setTimeout(() => {
+              window.location.href = "/suspended";
+            }, 3000);
           }
 
           errorEl.classList.remove("hidden");

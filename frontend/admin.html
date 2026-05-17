@@ -30,6 +30,7 @@
       defer
     ></script>
     <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
 
     <style>
       * {
@@ -82,13 +83,6 @@
         background: rgba(0, 0, 0, 0.8);
         backdrop-filter: blur(20px);
         border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-      }
-
-      .logo-mark {
-        width: 32px;
-        height: 32px;
-        object-fit: contain;
-        filter: drop-shadow(0 0 10px rgba(62, 228, 255, 0.15));
       }
 
       .btn-primary {
@@ -335,11 +329,26 @@
       class="header-bar sticky top-0 z-50 px-6 py-4 flex items-center justify-between"
     >
       <div class="flex items-center gap-3">
-        <img
-          src="/static/assets/jatayu-logo.png"
-          alt="Jatayu Logo"
-          class="logo-mark"
-        />
+        <svg
+          width="32"
+          height="32"
+          viewBox="0 0 32 32"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <rect
+            width="32"
+            height="32"
+            rx="8"
+            fill="white"
+            fill-opacity="0.08"
+          />
+          <path
+            d="M16 8L22 16L16 24L10 16L16 8Z"
+            fill="white"
+            fill-opacity="0.9"
+          />
+        </svg>
         <span style="font-size: 17px; font-weight: 600; letter-spacing: -0.3px"
           >Jatayu Admin</span
         >
@@ -504,6 +513,14 @@
           <i class="ph ph-chart-pie mr-2"></i>Patterns
         </button>
         <button
+          onclick="showTab('analytics')"
+          id="tab-analytics"
+          class="pb-3 px-1 tab-inactive font-medium"
+          title="Historical fraud and operations trends"
+        >
+          <i class="ph ph-chart-line-up mr-2"></i>Analytics
+        </button>
+        <button
           onclick="showTab('network')"
           id="tab-network"
           class="pb-3 px-1 tab-inactive font-medium"
@@ -629,6 +646,77 @@
           class="grid grid-cols-1 md:grid-cols-2 gap-6"
         >
           <p class="text-slate-400 text-center py-8">Loading...</p>
+        </div>
+      </div>
+
+      <div id="content-analytics" class="hidden">
+        <div class="glass-card rounded-2xl p-6 mb-6">
+          <div class="flex items-center justify-between mb-5 gap-4 flex-wrap">
+            <div>
+              <h2 class="text-lg font-semibold">Historical Analytics</h2>
+              <p class="text-xs text-slate-500">
+                Fraud decisions, score drift, review outcomes, and pipeline latency over time.
+              </p>
+            </div>
+            <div class="flex items-center gap-2">
+              <select
+                id="analytics-window"
+                onchange="loadAnalytics()"
+                class="px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-sm"
+              >
+                <option value="7">Last 7 days</option>
+                <option value="30" selected>Last 30 days</option>
+                <option value="90">Last 90 days</option>
+              </select>
+              <button
+                onclick="loadAnalytics()"
+                class="text-sm text-indigo-400 hover:text-indigo-300 px-3"
+              >
+                <i class="ph ph-arrows-clockwise mr-1"></i> Refresh
+              </button>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div class="rounded-xl bg-slate-800/40 border border-white/5 p-4">
+              <p class="text-xs text-slate-500 mb-1">Transactions</p>
+              <p id="analytics-total" class="text-2xl font-semibold">--</p>
+            </div>
+            <div class="rounded-xl bg-slate-800/40 border border-white/5 p-4">
+              <p class="text-xs text-slate-500 mb-1">Block Rate</p>
+              <p id="analytics-block-rate" class="text-2xl font-semibold text-red-400">--%</p>
+            </div>
+            <div class="rounded-xl bg-slate-800/40 border border-white/5 p-4">
+              <p class="text-xs text-slate-500 mb-1">False Positive Rate</p>
+              <p id="analytics-fpr" class="text-2xl font-semibold text-amber-400">--%</p>
+            </div>
+            <div class="rounded-xl bg-slate-800/40 border border-white/5 p-4">
+              <p class="text-xs text-slate-500 mb-1">Peak Suspicious Hour</p>
+              <p id="analytics-peak-hour" class="text-2xl font-semibold text-indigo-300">--</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          <div class="glass-card rounded-2xl p-6">
+            <h3 class="text-base font-semibold mb-4">Daily Decisions</h3>
+            <div class="h-80"><canvas id="chart-daily-decisions"></canvas></div>
+          </div>
+          <div class="glass-card rounded-2xl p-6">
+            <h3 class="text-base font-semibold mb-4">Block Rate & Score Drift</h3>
+            <div class="h-80"><canvas id="chart-score-drift"></canvas></div>
+          </div>
+          <div class="glass-card rounded-2xl p-6">
+            <h3 class="text-base font-semibold mb-4">Suspicious Activity by Hour</h3>
+            <div class="h-80"><canvas id="chart-hourly-risk"></canvas></div>
+          </div>
+          <div class="glass-card rounded-2xl p-6">
+            <h3 class="text-base font-semibold mb-4">Fraud Score Distribution</h3>
+            <div class="h-80"><canvas id="chart-score-distribution"></canvas></div>
+          </div>
+          <div class="glass-card rounded-2xl p-6 xl:col-span-2">
+            <h3 class="text-base font-semibold mb-4">Pipeline Latency Trend</h3>
+            <div class="h-72"><canvas id="chart-latency-trend"></canvas></div>
+          </div>
         </div>
       </div>
 
@@ -775,6 +863,106 @@
         </div>
       </div>
     </main>
+
+    <!-- XAI Explanation Modal -->
+    <div
+      id="explain-modal"
+      class="fixed inset-0 bg-black/70 backdrop-blur-sm hidden z-50 flex items-center justify-center p-4"
+      onclick="handleExplainModalBackdrop(event)"
+    >
+      <div class="glass-card rounded-2xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
+        <!-- Header -->
+        <div class="flex items-center justify-between mb-5">
+          <div class="flex items-center gap-3">
+            <div class="w-9 h-9 rounded-xl bg-indigo-500/20 flex items-center justify-center">
+              <i class="ph ph-brain text-indigo-400 text-lg"></i>
+            </div>
+            <div>
+              <h3 class="text-lg font-semibold">Fraud Explanation</h3>
+              <p id="explain-txn-id" class="text-xs text-slate-500 font-mono"></p>
+            </div>
+          </div>
+          <button onclick="closeExplainModal()" class="text-slate-400 hover:text-white transition">
+            <i class="ph ph-x text-xl"></i>
+          </button>
+        </div>
+
+        <!-- Loading spinner -->
+        <div id="explain-loading" class="flex flex-col items-center py-12 gap-4">
+          <div style="
+            width: 44px; height: 44px;
+            border: 3px solid rgba(99,102,241,0.2);
+            border-top-color: #6366f1;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+          "></div>
+          <p class="text-slate-400 text-sm">Analysing transaction features&hellip;</p>
+        </div>
+
+        <!-- Error state -->
+        <div id="explain-error" class="hidden py-8 text-center">
+          <i class="ph ph-warning-octagon text-red-400 text-3xl mb-2"></i>
+          <p id="explain-error-msg" class="text-red-400 text-sm"></p>
+        </div>
+
+        <!-- Results -->
+        <div id="explain-results" class="hidden space-y-5">
+
+          <!-- Fraud Score Gauge -->
+          <div class="rounded-xl bg-slate-800/40 border border-white/5 p-4">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-sm font-medium text-slate-300">Fraud Score vs Threshold</span>
+              <div class="flex gap-2">
+                <span id="explain-score-badge" class="text-xs px-2 py-0.5 rounded-full font-semibold"></span>
+              </div>
+            </div>
+            <div class="relative h-3 rounded-full bg-slate-700 overflow-hidden mb-1">
+              <div id="explain-gauge-fill" class="h-full rounded-full transition-all duration-700" style="width:0%"></div>
+              <div id="explain-threshold-marker" class="absolute top-0 h-full w-0.5 bg-white/60" style="left:0%"></div>
+            </div>
+            <div class="flex justify-between text-xs text-slate-500 mt-1">
+              <span>0</span>
+              <span id="explain-score-val"></span>
+              <span>1.0</span>
+            </div>
+          </div>
+
+          <!-- Feature Contribution Chart -->
+          <div class="rounded-xl bg-slate-800/40 border border-white/5 p-4">
+            <p class="text-sm font-medium text-slate-300 mb-3">Feature Contributions</p>
+            <div id="explain-chart" class="space-y-2"></div>
+          </div>
+
+          <!-- Rationale -->
+          <div class="rounded-xl bg-indigo-950/40 border border-indigo-500/20 p-4">
+            <div class="flex items-center gap-2 mb-2">
+              <i class="ph ph-chat-circle-text text-indigo-400"></i>
+              <p class="text-sm font-medium text-indigo-300">AI Rationale</p>
+            </div>
+            <p id="explain-rationale" class="text-sm text-slate-200 leading-relaxed"></p>
+            <span id="explain-cursor" class="inline-block w-0.5 h-4 bg-indigo-400 ml-0.5 align-middle" style="animation: blink 1s step-end infinite"></span>
+          </div>
+
+          <!-- Metadata footer -->
+          <div class="flex gap-3 flex-wrap">
+            <span id="explain-model-badge" class="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-slate-700/60 border border-white/5 text-slate-400 cursor-default" title="Model version used for scoring">
+              <i class="ph ph-robot"></i> <span></span>
+            </span>
+            <span id="explain-source-badge" class="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-slate-700/60 border border-white/5 text-slate-400 cursor-default" title="Threshold configuration source">
+              <i class="ph ph-file-text"></i> <span></span>
+            </span>
+            <span id="explain-attribution-badge" class="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-slate-700/60 border border-white/5 text-slate-400 cursor-default" title="Feature attribution method">
+              <i class="ph ph-chart-bar"></i> <span></span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <style>
+      @keyframes spin  { to { transform: rotate(360deg); } }
+      @keyframes blink { 50% { opacity: 0; } }
+    </style>
 
     <!-- Action Modal -->
     <div
@@ -934,6 +1122,7 @@
           "users",
           "compliance",
           "patterns",
+          "analytics",
           "network",
           "support",
         ].forEach((t) => {
@@ -952,8 +1141,142 @@
         else if (tab === "users") loadUsers();
         else if (tab === "compliance") loadCompliance();
         else if (tab === "patterns") loadPatterns();
+        else if (tab === "analytics") loadAnalytics();
         else if (tab === "network") loadFraudNetwork();
         else if (tab === "support") loadSupport();
+      }
+
+      const analyticsCharts = {};
+      const chartTheme = {
+        grid: "rgba(255,255,255,0.06)",
+        tick: "rgba(255,255,255,0.55)",
+      };
+
+      function destroyChart(id) {
+        if (analyticsCharts[id]) {
+          analyticsCharts[id].destroy();
+          delete analyticsCharts[id];
+        }
+      }
+
+      function makeChart(id, config) {
+        destroyChart(id);
+        const el = document.getElementById(id);
+        if (!el || !window.Chart) return;
+        analyticsCharts[id] = new Chart(el, config);
+      }
+
+      function baseChartOptions(extra = {}) {
+        return {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+          plugins: {
+            legend: { labels: { color: chartTheme.tick, boxWidth: 10, usePointStyle: true } },
+            tooltip: { backgroundColor: "rgba(15,23,42,0.96)", borderColor: "rgba(255,255,255,0.12)", borderWidth: 1 },
+          },
+          scales: {
+            x: { ticks: { color: chartTheme.tick, maxRotation: 0 }, grid: { color: chartTheme.grid } },
+            y: { ticks: { color: chartTheme.tick }, grid: { color: chartTheme.grid }, beginAtZero: true },
+          },
+          ...extra,
+        };
+      }
+
+      async function loadAnalytics() {
+        const days = document.getElementById("analytics-window")?.value || 30;
+        try {
+          const res = await apiCall(`/admin/analytics/trends?days=${days}`);
+          const data = await res.json();
+          renderAnalytics(data);
+        } catch (err) {
+          console.error("Analytics error:", err);
+        }
+      }
+
+      function renderAnalytics(data) {
+        const daily = data.daily || [];
+        const hourly = data.hourly || [];
+        const scores = data.score_distribution || [];
+        const review = data.review_outcomes || {};
+        const total = daily.reduce((sum, d) => sum + (d.total || 0), 0);
+        const blocked = daily.reduce((sum, d) => sum + (d.blocked || 0), 0);
+        const peak = [...hourly].sort((a, b) => (b.suspicious || 0) - (a.suspicious || 0))[0];
+
+        document.getElementById("analytics-total").textContent = total.toLocaleString("en-IN");
+        document.getElementById("analytics-block-rate").textContent = `${((blocked / Math.max(total, 1)) * 100).toFixed(1)}%`;
+        document.getElementById("analytics-fpr").textContent = `${(review.false_positive_rate_pct || 0).toFixed(1)}%`;
+        document.getElementById("analytics-peak-hour").textContent = peak && peak.suspicious ? peak.label : "--";
+
+        const labels = daily.map((d) => new Date(d.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }));
+
+        makeChart("chart-daily-decisions", {
+          type: "bar",
+          data: {
+            labels,
+            datasets: [
+              { label: "Approved", data: daily.map((d) => d.approved), backgroundColor: "rgba(16,185,129,0.72)", stack: "decisions" },
+              { label: "Held", data: daily.map((d) => d.held), backgroundColor: "rgba(245,158,11,0.78)", stack: "decisions" },
+              { label: "Blocked", data: daily.map((d) => d.blocked), backgroundColor: "rgba(239,68,68,0.78)", stack: "decisions" },
+            ],
+          },
+          options: baseChartOptions({ scales: { x: { stacked: true, ticks: { color: chartTheme.tick, maxRotation: 0 }, grid: { color: chartTheme.grid } }, y: { stacked: true, ticks: { color: chartTheme.tick }, grid: { color: chartTheme.grid }, beginAtZero: true } } }),
+        });
+
+        makeChart("chart-score-drift", {
+          type: "line",
+          data: {
+            labels,
+            datasets: [
+              { label: "Block rate %", data: daily.map((d) => d.block_rate_pct), borderColor: "#ef4444", backgroundColor: "rgba(239,68,68,0.12)", tension: 0.35, yAxisID: "y" },
+              { label: "Avg fraud score", data: daily.map((d) => d.avg_fraud_score), borderColor: "#818cf8", backgroundColor: "rgba(129,140,248,0.12)", tension: 0.35, yAxisID: "y1" },
+            ],
+          },
+          options: baseChartOptions({
+            scales: {
+              x: { ticks: { color: chartTheme.tick, maxRotation: 0 }, grid: { color: chartTheme.grid } },
+              y: { type: "linear", position: "left", beginAtZero: true, ticks: { color: chartTheme.tick }, grid: { color: chartTheme.grid } },
+              y1: { type: "linear", position: "right", min: 0, max: 1, ticks: { color: chartTheme.tick }, grid: { drawOnChartArea: false } },
+            },
+          }),
+        });
+
+        makeChart("chart-hourly-risk", {
+          type: "bar",
+          data: {
+            labels: hourly.map((h) => h.label),
+            datasets: [
+              { label: "Suspicious", data: hourly.map((h) => h.suspicious), backgroundColor: "rgba(245,158,11,0.75)" },
+              { label: "Blocked", data: hourly.map((h) => h.blocked), backgroundColor: "rgba(239,68,68,0.78)" },
+            ],
+          },
+          options: baseChartOptions(),
+        });
+
+        makeChart("chart-score-distribution", {
+          type: "doughnut",
+          data: {
+            labels: scores.map((s) => s.bucket),
+            datasets: [{
+              data: scores.map((s) => s.total),
+              backgroundColor: ["#10b981", "#84cc16", "#f59e0b", "#f97316", "#ef4444"],
+              borderColor: "rgba(0,0,0,0.55)",
+              borderWidth: 2,
+            }],
+          },
+          options: baseChartOptions({ scales: {}, cutout: "58%" }),
+        });
+
+        makeChart("chart-latency-trend", {
+          type: "line",
+          data: {
+            labels,
+            datasets: [
+              { label: "Avg latency ms", data: daily.map((d) => d.avg_latency_ms), borderColor: "#22d3ee", backgroundColor: "rgba(34,211,238,0.12)", fill: true, tension: 0.35 },
+            ],
+          },
+          options: baseChartOptions(),
+        });
       }
 
       async function loadHeld() {
@@ -992,6 +1315,9 @@
                 </button>
                 <button onclick="blockTransaction('${t.transaction_id}')" class="px-3 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white text-sm">
                   <i class="ph ph-x mr-1"></i>Block
+                </button>
+                <button onclick="openExplainModal('${t.transaction_id}')" class="px-3 py-2 rounded-lg bg-indigo-600/40 hover:bg-indigo-500/60 text-indigo-200 text-sm border border-indigo-500/40" title="AI Explanation">
+                  <i class="ph ph-brain mr-1"></i>Explain
                 </button>
               </div>
             </div>
@@ -1045,6 +1371,9 @@
                   <p class="text-sm risk-${(t.risk_level || "low").toLowerCase()}">${((t.fraud_score || 0) * 100).toFixed(0)}%</p>
                   <p class="text-xs text-slate-500">${t.pattern_type || "-"}</p>
                 </div>
+                <button onclick="openExplainModal('${t.transaction_id}')" class="px-3 py-2 rounded-lg bg-indigo-600/30 hover:bg-indigo-500/50 text-indigo-300 text-sm border border-indigo-500/30" title="AI Explanation">
+                  <i class="ph ph-brain"></i>
+                </button>
               </div>
             </div>
           `;
@@ -2244,6 +2573,183 @@
           await loadAdminThread(currentAdminTicketId);
         } catch (err) {
           alert("Error: " + err.message);
+        }
+      }
+      // ═══════════════════════════════════════════════════════════════════════════
+      // XAI EXPLANATION MODAL
+      // ═══════════════════════════════════════════════════════════════════════════
+
+      let _explainEvtSource = null;
+
+      async function openExplainModal(txnId) {
+        // Reset state
+        if (_explainEvtSource) { _explainEvtSource.close(); _explainEvtSource = null; }
+        document.getElementById("explain-txn-id").textContent = txnId;
+        document.getElementById("explain-loading").classList.remove("hidden");
+        document.getElementById("explain-error").classList.add("hidden");
+        document.getElementById("explain-results").classList.add("hidden");
+        document.getElementById("explain-rationale").textContent = "";
+        document.getElementById("explain-cursor").style.display = "inline-block";
+        document.getElementById("explain-modal").classList.remove("hidden");
+
+        // Use EventSource with auth token injected via URL param (SSE doesn't support custom headers)
+        // We POST the auth token to a one-time nonce endpoint — but since our SSE endpoint
+        // uses Depends(require_admin) we pass the token as a query param workaround:
+        // Actually FastAPI's Depends can read from headers; EventSource cannot set headers.
+        // Workaround: use fetch() with a ReadableStream instead.
+        try {
+          const res = await fetch(`/admin/fraud/${txnId}/explain`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({ detail: res.statusText }));
+            showExplainError(errData.detail || "Request failed");
+            return;
+          }
+
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buf = "";
+          let rationaleAccum = "";
+          let gotResult = false;
+
+          const pump = async () => {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buf += decoder.decode(value, { stream: true });
+              const parts = buf.split("\n\n");
+              buf = parts.pop(); // keep incomplete event in buffer
+
+              for (const part of parts) {
+                if (!part.trim()) continue;
+                const lines = part.split("\n");
+                let evtType = "message", evtData = "";
+                for (const line of lines) {
+                  if (line.startsWith("event: ")) evtType = line.slice(7).trim();
+                  else if (line.startsWith("data: ")) evtData = line.slice(6).trim();
+                }
+
+                if (evtType === "chunk") {
+                  // Show loading → results on first chunk
+                  if (!gotResult) {
+                    document.getElementById("explain-loading").classList.add("hidden");
+                    document.getElementById("explain-results").classList.remove("hidden");
+                  }
+                  const word = JSON.parse(evtData);
+                  rationaleAccum += word;
+                  document.getElementById("explain-rationale").textContent = rationaleAccum;
+
+                } else if (evtType === "result") {
+                  gotResult = true;
+                  const exp = JSON.parse(evtData);
+                  renderExplainResults(exp, rationaleAccum);
+
+                } else if (evtType === "done") {
+                  document.getElementById("explain-cursor").style.display = "none";
+                  reader.cancel();
+                  return;
+
+                } else if (evtType === "error") {
+                  const msg = JSON.parse(evtData);
+                  showExplainError(msg);
+                  reader.cancel();
+                  return;
+                }
+              }
+            }
+          };
+          pump();
+
+        } catch (err) {
+          showExplainError(err.message || "Unknown error");
+        }
+      }
+
+      function renderExplainResults(exp, streamedRationale) {
+        document.getElementById("explain-loading").classList.add("hidden");
+        document.getElementById("explain-results").classList.remove("hidden");
+
+        const score = exp.fraud_score ?? 0;
+        const threshold = exp.threshold ?? 0.5;
+        const isFraud = score >= threshold;
+
+        // Gauge
+        const fillEl = document.getElementById("explain-gauge-fill");
+        const markerEl = document.getElementById("explain-threshold-marker");
+        const badgeEl = document.getElementById("explain-score-badge");
+        const scoreValEl = document.getElementById("explain-score-val");
+
+        fillEl.style.width = `${Math.min(score * 100, 100)}%`;
+        fillEl.style.background = isFraud
+          ? "linear-gradient(90deg, #f97316, #ef4444)"
+          : "linear-gradient(90deg, #10b981, #34d399)";
+        markerEl.style.left = `${Math.min(threshold * 100, 100)}%`;
+        badgeEl.textContent = isFraud ? "FRAUD" : "CLEAN";
+        badgeEl.className = `text-xs px-2 py-0.5 rounded-full font-semibold ${
+          isFraud ? "bg-red-500/20 text-red-400" : "bg-emerald-500/20 text-emerald-400"
+        }`;
+        scoreValEl.textContent = `Score: ${(score * 100).toFixed(2)}% | Threshold: ${(threshold * 100).toFixed(2)}%`;
+
+        // Feature chart
+        const chartEl = document.getElementById("explain-chart");
+        const allFeatures = [
+          ...(exp.top_positive_features || []),
+          ...(exp.top_negative_features || []),
+        ].sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution));
+
+        const maxAbs = Math.max(...allFeatures.map(f => Math.abs(f.contribution)), 0.001);
+
+        chartEl.innerHTML = allFeatures.map(f => {
+          const pct = Math.min((Math.abs(f.contribution) / maxAbs) * 100, 100);
+          const isPos = f.contribution > 0;
+          const barColor = isPos
+            ? "linear-gradient(90deg,#ef4444,#f97316)"
+            : "linear-gradient(90deg,#10b981,#34d399)";
+          const sign = isPos ? "+" : "";
+          return `
+            <div class="flex items-center gap-3">
+              <span class="text-xs text-slate-400 w-36 truncate" title="${f.feature}">${f.feature}</span>
+              <div class="flex-1 relative h-5 bg-slate-700/50 rounded overflow-hidden">
+                <div style="width:${pct}%;height:100%;background:${barColor};transition:width .5s ease"></div>
+              </div>
+              <span class="text-xs font-mono w-16 text-right ${isPos ? 'text-red-400' : 'text-emerald-400'}">${sign}${f.contribution.toFixed(4)}</span>
+            </div>
+          `;
+        }).join("");
+
+        // Rationale (use what was streamed, or fall back)
+        const rationaleEl = document.getElementById("explain-rationale");
+        if (!rationaleEl.textContent.trim()) {
+          rationaleEl.textContent = exp.rationale || "No rationale available.";
+        }
+
+        // Metadata badges
+        const modelBadge = document.getElementById("explain-model-badge");
+        const sourceBadge = document.getElementById("explain-source-badge");
+        const attributionBadge = document.getElementById("explain-attribution-badge");
+        modelBadge.querySelector("span").textContent = `Model: ${exp.model_version || "unknown"}`;
+        sourceBadge.querySelector("span").textContent = `Threshold source: ${exp.threshold_source || "unknown"}`;
+        attributionBadge.querySelector("span").textContent = `Attribution: ${(exp.attribution_method || "fallback").toUpperCase()}`;
+        attributionBadge.title = exp.shap_status || "Feature attribution method";
+      }
+
+      function showExplainError(msg) {
+        document.getElementById("explain-loading").classList.add("hidden");
+        document.getElementById("explain-results").classList.add("hidden");
+        document.getElementById("explain-error").classList.remove("hidden");
+        document.getElementById("explain-error-msg").textContent = msg;
+      }
+
+      function closeExplainModal() {
+        if (_explainEvtSource) { _explainEvtSource.close(); _explainEvtSource = null; }
+        document.getElementById("explain-modal").classList.add("hidden");
+      }
+
+      function handleExplainModalBackdrop(event) {
+        if (event.target === document.getElementById("explain-modal")) {
+          closeExplainModal();
         }
       }
     </script>

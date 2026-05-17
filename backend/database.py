@@ -31,7 +31,12 @@ from pathlib import Path
 from typing import Any, Optional
 from enum import Enum
 
-DB_PATH = Path(__file__).parent / "jatayu.db"
+from config import backend_path_from_env, load_environment
+
+load_environment()
+
+DB_PATH = backend_path_from_env("JATAYU_DB_PATH", "data/jatayu.db")
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 # ── Enums ────────────────────────────────────────────────────────────────────
@@ -1006,6 +1011,105 @@ def get_sender_recent_txn_count(sender_id: str, lookback_hours: int = 1) -> int:
     return row["cnt"] if row else 0
 
 
+def get_receiver_recent_convergence(
+    receiver_id: str, lookback_minutes: int = 60
+) -> dict:
+    """
+    Return convergence stats for a receiver within the lookback window.
+
+    Used by Agent 2 as a DB-backed complement to the in-memory buffer
+    for detecting mule networks (many senders → one receiver).
+
+    Returns:
+        {"unique_senders": int, "txn_count": int, "total_amount": float}
+    """
+    since = (datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)).isoformat()
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT COUNT(DISTINCT sender_id) as unique_senders,
+                      COUNT(*) as txn_count,
+                      COALESCE(SUM(amount), 0) as total_amount
+               FROM transactions
+               WHERE receiver_id = ? AND initiated_at > ?""",
+            (receiver_id, since)
+        ).fetchone()
+    if row:
+        return {
+            "unique_senders": row["unique_senders"],
+            "txn_count": row["txn_count"],
+            "total_amount": float(row["total_amount"]),
+        }
+    return {"unique_senders": 0, "txn_count": 0, "total_amount": 0.0}
+
+
+def get_sender_time_velocity(
+    sender_id: str, lookback_minutes: int = 10
+) -> dict:
+    """
+    Return time-based velocity stats for a sender within the lookback window.
+
+    Unlike the buffer-based count (which is limited to 100 entries), this
+    queries the transaction table directly so it survives server restarts
+    and captures ALL transactions, not just the last 100.
+
+    Returns:
+        {
+            "txn_count": int,
+            "total_amount": float,
+            "unique_receivers": int,
+            "avg_inter_txn_seconds": float,  # average gap between transactions
+            "min_inter_txn_seconds": float,  # minimum gap (fastest burst)
+        }
+    """
+    since = (datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)).isoformat()
+    with get_conn() as conn:
+        # Aggregate stats
+        agg = conn.execute(
+            """SELECT COUNT(*) as txn_count,
+                      COALESCE(SUM(amount), 0) as total_amount,
+                      COUNT(DISTINCT receiver_id) as unique_receivers
+               FROM transactions
+               WHERE sender_id = ? AND initiated_at > ?""",
+            (sender_id, since)
+        ).fetchone()
+
+        # Timestamps for inter-txn gap calculation
+        timestamps = conn.execute(
+            """SELECT initiated_at FROM transactions
+               WHERE sender_id = ? AND initiated_at > ?
+               ORDER BY initiated_at ASC""",
+            (sender_id, since)
+        ).fetchall()
+
+    txn_count = agg["txn_count"] if agg else 0
+    total_amount = float(agg["total_amount"]) if agg else 0.0
+    unique_receivers = agg["unique_receivers"] if agg else 0
+
+    # Calculate inter-transaction timing
+    avg_gap = float("inf")
+    min_gap = float("inf")
+    if timestamps and len(timestamps) >= 2:
+        times = []
+        for ts in timestamps:
+            try:
+                dt = datetime.fromisoformat(ts["initiated_at"])
+                times.append(dt.timestamp())
+            except Exception:
+                pass
+        if len(times) >= 2:
+            gaps = [times[i+1] - times[i] for i in range(len(times)-1)]
+            avg_gap = sum(gaps) / len(gaps)
+            min_gap = min(gaps)
+
+    return {
+        "txn_count": txn_count,
+        "total_amount": total_amount,
+        "unique_receivers": unique_receivers,
+        "avg_inter_txn_seconds": avg_gap,
+        "min_inter_txn_seconds": min_gap,
+    }
+
+
 def get_held_transactions(limit: int = 100) -> list[dict]:
     """Get all HELD transactions for admin review."""
     with get_conn() as conn:
@@ -1038,6 +1142,148 @@ def get_recent_transactions(limit: int = 100) -> list[dict]:
 # ══════════════════════════════════════════════════════════════════════════════
 # PAYEE MANAGEMENT
 # ══════════════════════════════════════════════════════════════════════════════
+
+def get_transaction_analytics(days: int = 30) -> dict:
+    """
+    Aggregate transaction history for admin analytics.
+
+    The raw transactions table remains the source of truth. These queries build
+    compact daily/hourly buckets on demand so the dashboard can answer trend
+    questions without scanning recent rows in JavaScript.
+    """
+    days = max(1, min(int(days or 30), 90))
+    since = (datetime.now(timezone.utc) - timedelta(days=days - 1)).date().isoformat()
+
+    with get_conn() as conn:
+        daily_rows = conn.execute(
+            """SELECT
+                   substr(initiated_at, 1, 10) AS bucket,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN status = 'BLOCKED' OR action_taken = 'BLOCK' THEN 1 ELSE 0 END) AS blocked,
+                   SUM(CASE WHEN status = 'HELD' OR action_taken = 'HOLD' THEN 1 ELSE 0 END) AS held,
+                   SUM(CASE WHEN status IN ('COMPLETED', 'APPROVED') THEN 1 ELSE 0 END) AS approved,
+                   SUM(CASE WHEN fraud_label = 1 THEN 1 ELSE 0 END) AS fraud_labeled,
+                   AVG(COALESCE(fraud_score, 0)) AS avg_fraud_score,
+                   AVG(CASE WHEN pipeline_latency_ms IS NOT NULL THEN pipeline_latency_ms END) AS avg_latency_ms
+               FROM transactions
+               WHERE initiated_at >= ?
+               GROUP BY bucket
+               ORDER BY bucket ASC""",
+            (since,),
+        ).fetchall()
+
+        hourly_rows = conn.execute(
+            """SELECT
+                   CAST(substr(initiated_at, 12, 2) AS INTEGER) AS hour,
+                   COUNT(*) AS total,
+                   SUM(CASE
+                         WHEN action_taken IN ('HOLD', 'BLOCK')
+                              OR fraud_label = 1
+                              OR risk_level IN ('HIGH', 'CRITICAL')
+                         THEN 1 ELSE 0
+                       END) AS suspicious,
+                   SUM(CASE WHEN status = 'BLOCKED' OR action_taken = 'BLOCK' THEN 1 ELSE 0 END) AS blocked,
+                   AVG(COALESCE(fraud_score, 0)) AS avg_fraud_score
+               FROM transactions
+               WHERE initiated_at >= ?
+               GROUP BY hour
+               ORDER BY hour ASC""",
+            (since,),
+        ).fetchall()
+
+        score_rows = conn.execute(
+            """SELECT
+                   CASE
+                     WHEN COALESCE(fraud_score, 0) < 0.20 THEN '0.00-0.19'
+                     WHEN COALESCE(fraud_score, 0) < 0.40 THEN '0.20-0.39'
+                     WHEN COALESCE(fraud_score, 0) < 0.60 THEN '0.40-0.59'
+                     WHEN COALESCE(fraud_score, 0) < 0.80 THEN '0.60-0.79'
+                     ELSE '0.80-1.00'
+                   END AS bucket,
+                   COUNT(*) AS total
+               FROM transactions
+               WHERE initiated_at >= ?
+               GROUP BY bucket""",
+            (since,),
+        ).fetchall()
+
+        review_row = conn.execute(
+            """SELECT
+                   SUM(CASE WHEN action_taken = 'HOLD' THEN 1 ELSE 0 END) AS held_for_review,
+                   SUM(CASE WHEN action_taken = 'HOLD' AND status IN ('COMPLETED', 'APPROVED') THEN 1 ELSE 0 END) AS held_approved,
+                   SUM(CASE WHEN action_taken = 'HOLD' AND status = 'BLOCKED' THEN 1 ELSE 0 END) AS held_blocked
+               FROM transactions
+               WHERE initiated_at >= ?""",
+            (since,),
+        ).fetchone()
+
+    daily_by_bucket = {row["bucket"]: dict(row) for row in daily_rows}
+    daily = []
+    today = datetime.now(timezone.utc).date()
+    start_date = today - timedelta(days=days - 1)
+    for offset in range(days):
+        bucket = (start_date + timedelta(days=offset)).isoformat()
+        row = daily_by_bucket.get(bucket, {})
+        total = int(row.get("total") or 0)
+        blocked = int(row.get("blocked") or 0)
+        held = int(row.get("held") or 0)
+        approved = int(row.get("approved") or 0)
+        fraud_labeled = int(row.get("fraud_labeled") or 0)
+        daily.append({
+            "date": bucket,
+            "total": total,
+            "blocked": blocked,
+            "held": held,
+            "approved": approved,
+            "fraud_labeled": fraud_labeled,
+            "block_rate_pct": round(blocked / max(total, 1) * 100, 2),
+            "fraud_rate_pct": round(fraud_labeled / max(total, 1) * 100, 2),
+            "avg_fraud_score": round(float(row.get("avg_fraud_score") or 0), 4),
+            "avg_latency_ms": round(float(row.get("avg_latency_ms") or 0), 2),
+        })
+
+    hourly_by_bucket = {int(row["hour"] or 0): dict(row) for row in hourly_rows}
+    hourly = []
+    for hour in range(24):
+        row = hourly_by_bucket.get(hour, {})
+        total = int(row.get("total") or 0)
+        suspicious = int(row.get("suspicious") or 0)
+        blocked = int(row.get("blocked") or 0)
+        hourly.append({
+            "hour": hour,
+            "label": f"{hour:02d}:00",
+            "total": total,
+            "suspicious": suspicious,
+            "blocked": blocked,
+            "suspicious_rate_pct": round(suspicious / max(total, 1) * 100, 2),
+            "avg_fraud_score": round(float(row.get("avg_fraud_score") or 0), 4),
+        })
+
+    score_bucket_order = ["0.00-0.19", "0.20-0.39", "0.40-0.59", "0.60-0.79", "0.80-1.00"]
+    score_counts = {row["bucket"]: int(row["total"] or 0) for row in score_rows}
+    score_distribution = [
+        {"bucket": bucket, "total": score_counts.get(bucket, 0)}
+        for bucket in score_bucket_order
+    ]
+
+    review = dict(review_row) if review_row else {}
+    held_for_review = int(review.get("held_for_review") or 0)
+    held_approved = int(review.get("held_approved") or 0)
+    held_blocked = int(review.get("held_blocked") or 0)
+
+    return {
+        "window_days": days,
+        "daily": daily,
+        "hourly": hourly,
+        "score_distribution": score_distribution,
+        "review_outcomes": {
+            "held_for_review": held_for_review,
+            "held_approved": held_approved,
+            "held_blocked": held_blocked,
+            "false_positive_rate_pct": round(held_approved / max(held_for_review, 1) * 100, 2),
+        },
+    }
+
 
 def add_payee(user_id: str, payee_user_id: str, nickname: Optional[str] = None) -> str:
     """Add a new payee. Returns payee_id."""

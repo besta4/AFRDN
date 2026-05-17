@@ -3,16 +3,23 @@
 .env.*
 !.env.example
 
-data/
+# Heavy training/model artifacts and runtime state
+backend/data/
+backend/models/*.gguf
+backend/models/.cache/
+backend/jatayu.db
+backend/audit.jsonl
+backend/*.db
+backend/*.jsonl
+
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.ruff_cache/
+tests/output/
 
-# Runtime/local state
-audit.jsonl
-*.db
-
-# Local model caches and heavyweight model binaries
-models/.cache/
-models/*.gguf
+# Frontend/deploy outputs
+frontend/dist/
+node_modules/
 
 PS_20174392719_1491204439457_log.csv
